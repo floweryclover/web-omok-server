@@ -42,6 +42,7 @@ namespace WebOmokServer
 
         public async Task HandleClientLoopAsync(Client client)
         {
+            var closeWebSocket = (string message) => client.WebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, message, CancellationToken.None);
             OnClientConnected(client);
             var buffer = new byte[BUFFER_SIZE];
             
@@ -52,8 +53,8 @@ namespace WebOmokServer
 					var result = await client.WebSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
 					if (result.MessageType == WebSocketMessageType.Close)
 					{
-						await client.WebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "클라이언트가 연결을 종료하였습니다.", CancellationToken.None);
-						break;
+                        await closeWebSocket("클라이언트가 연결을 종료하였습니다.");
+                        break;
 					}
                     
                     if (result.Count > BUFFER_SIZE)
@@ -63,7 +64,11 @@ namespace WebOmokServer
                     }
 
 					string message = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    await HandleMessageAsync(client, message);
+                    if (!await HandleMessageAsync(client, message))
+                    {
+                        await closeWebSocket("오류가 발생하였습니다.");
+                        break;
+                    }
 				}
 			}
             catch (WebSocketException webSocketException)
