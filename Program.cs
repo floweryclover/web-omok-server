@@ -15,18 +15,15 @@ app.UseWebSockets(webSocketOptions);
 app.Map("ws/",
     async context =>
     {
-        Console.WriteLine("[{0} 스레드가 새 요청을 받음]", Thread.CurrentThread.ManagedThreadId);
-        if (context.WebSockets.IsWebSocketRequest)
-        {
-            using var ws = await context.WebSockets.AcceptWebSocketAsync();
-            await omokServer.HandleClientAsync(ws, context.Connection);
-        }
-        else
+        if (!context.WebSockets.IsWebSocketRequest)
         {
             context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
+            return;
         }
-    });
 
-Console.WriteLine("\n\n서버 준비 완료\n\n");
+        var ws = await context.WebSockets.AcceptWebSocketAsync();
+        var client = new Client(ws, context.Connection);
+        await omokServer.HandleClientLoopAsync(client);
+    });
 
 app.Run();
