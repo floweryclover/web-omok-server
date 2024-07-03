@@ -1,4 +1,5 @@
-﻿using System.Security.Cryptography.X509Certificates;
+﻿using System.Diagnostics;
+using System.Security.Cryptography.X509Certificates;
 
 namespace WebOmokServer
 { 
@@ -20,81 +21,35 @@ namespace WebOmokServer
 			Waiting,
 			Playing,
 		}
+
+		private readonly object _lock = new object();
+
 		public int RoomId { get; }
 		private RoomState _state;
-		public RoomState State { get { return _state; } }
-		private string _roomName;
-		public string RoomName
+		public RoomState State
 		{
-			get
-			{
-				return _roomName;
-			}
-			set 
-			{
-				_roomName = value;
-				RoomNameChanged?.Invoke(this, new EventArgs());
-			} 
+			get => _state;
+		}
+		private string _roomName;
+		public string RoomName 
+		{
+			get => _roomName;
 		}
 
 		private string? _roomOwnerId;
-		public string? RoomOwnerId { get { return _roomOwnerId; } }
-
-		private void _playerAssign(ref string? target, string? newValue)
-		{
-			if (target != null)
-			{
-				PlayerKicked?.Invoke(this, new ClientIdArgs(target));
-			}
-			target = newValue;
+		public string? RoomOwnerId {
+			get =>  _roomOwnerId;
 		}
 		private string? _blackPlayer;
-		private string? BlackPlayer {
-			get
-			{
-				return _blackPlayer;
-			}
-			set
-			{
-				_playerAssign(ref _blackPlayer, value);
-				if (value == null)
-				{
-					if (WhitePlayer != null)
-					{
-						_roomOwnerId = WhitePlayer;
-						RoomOwnerChanged?.Invoke(this, new ClientIdArgs(WhitePlayer));
-					}
-                    else
-                    {
-                        _roomOwnerId = null;
-                    }
-                }
-			}
+		private string? BlackPlayer
+		{
+			get => _blackPlayer;
 		}
 
 		private string? _whitePlayer;
 		private string? WhitePlayer
 		{
-			get
-			{
-				return _whitePlayer;
-			}
-			set
-			{
-				_playerAssign(ref _whitePlayer, value);
-				if (value == null)
-				{
-					if (BlackPlayer != null)
-					{
-						_roomOwnerId = BlackPlayer;
-						RoomOwnerChanged?.Invoke(this, new ClientIdArgs(BlackPlayer));
-					}
-					else
-					{
-						_roomOwnerId = null;
-					}
-				}
-			}
+			get => _whitePlayer;
 		}
 
 		public event EventHandler<ClientIdArgs>? PlayerKicked;
@@ -113,78 +68,149 @@ namespace WebOmokServer
 
 		public bool AddPlayer(string playerId)
 		{
-			if (State == RoomState.Playing)
+			var Switch = (bool condition, Action andThen, Action orElse) =>
 			{
-				return false;
-			}
+				if (condition)
+				{
+                    andThen();
+				}
+				else
+				{
+                    orElse();
+				}
+			};
+			lock(_lock)
+			{
+                if (State == RoomState.Playing)
+                {
+                    return false;
+                }
 
-			if (_blackPlayer != null && _whitePlayer != null)
-			{
-				return false;
-			}
-			else if (_blackPlayer == null && _whitePlayer == null)
-			{
-				_state = RoomState.Waiting;
-				var random = new Random();
-				bool isBlack = random.Next(1) == 0;
-				
-				if (isBlack)
-				{
-					_blackPlayer = playerId;
-				}
-				else
-				{
-					_whitePlayer = playerId;
-				}
-				_roomOwnerId = playerId;
-			}
-			else
-			{
-				if (_blackPlayer == null)
-				{
-					_blackPlayer = playerId;
-				}
-				else
-				{
-					_whitePlayer = playerId;
-				}
-			}
+                if (_blackPlayer != null && _whitePlayer != null)
+                {
+                    return false;
+                }
+                else if (_blackPlayer == null && _whitePlayer == null)
+                {
+                    _state = RoomState.Waiting;
+                    var random = new Random();
+                    bool isBlack = random.Next(1) == 0;
+
+					Switch(isBlack, () => _blackPlayer = playerId, () => _whitePlayer = playerId);
+                    _roomOwnerId = playerId;
+                }
+                else
+                {
+					var otherPlayer = _blackPlayer == null ? _whitePlayer : _blackPlayer;
+					if (otherPlayer == playerId)
+					{
+						return false;
+					}
+
+					Switch(_blackPlayer == null, () => _blackPlayer = playerId, () => _whitePlayer = playerId);
+                }
+            }
 			return true;
-		}
-
-		public void RemovePlayer(string playerId)
-		{
-			bool someoneLeft = false;
-			if (BlackPlayer != null & BlackPlayer == playerId)
-			{
-				BlackPlayer = null;
-				someoneLeft = true;
-			}
-			else if (WhitePlayer != null & WhitePlayer == playerId)
-			{
-				WhitePlayer = null;
-				someoneLeft = true;
-			}
-
-			if (someoneLeft)
-			{
-				if (BlackPlayer == null && WhitePlayer == null)
-				{
-					InactivateRoom();
-				}
-			}
 		}
 
 		public void InactivateRoom()
 		{
-			BlackPlayer = null;
-			WhitePlayer = null;
-			GameRoomInactivated?.Invoke(this, new EventArgs());
+			lock (_lock)
+			{
+				SetPlayerId(ref _blackPlayer, null, _whitePlayer);
+				SetPlayerId(ref _whitePlayer, null, _blackPlayer);
+			}
 		}
 
 		public bool IsPlayerJoined(string playerId)
 		{
-			return (WhitePlayer != null && WhitePlayer == playerId) || (BlackPlayer != null && BlackPlayer == playerId);
+			lock (_lock)
+			{
+                return (WhitePlayer != null && WhitePlayer == playerId) || (BlackPlayer != null && BlackPlayer == playerId);
+            }
 		}
+
+		public bool IsJoinable()
+		{
+			lock (_lock)
+			{
+                return BlackPlayer != null || WhitePlayer != null;
+            }
+		}
+
+		public void RemovePlayer(string playerId)
+		{
+			lock (_lock)
+			{
+				if (_blackPlayer == playerId)
+				{
+					SetPlayerId(ref _blackPlayer, null, _whitePlayer);
+				}
+				else
+				{
+					SetPlayerId(ref _whitePlayer, null, _blackPlayer);
+				}
+			}
+		}
+		public void SetBlackPlayerId(string? newValue)
+		{
+			lock (_lock)
+			{
+                SetPlayerId(ref _blackPlayer, newValue, _whitePlayer);
+            }
+		}
+		public void SetWhitePlayerId(string? newValue)
+		{
+			lock (_lock)
+			{
+                SetPlayerId(ref _whitePlayer, newValue, _blackPlayer);
+            }
+		}
+
+		public void SetRoomName(string newName)
+		{
+			lock (_lock)
+			{
+				_roomName = newName;
+				RoomNameChanged?.Invoke(this, EventArgs.Empty);
+			}
+		}
+
+		/// <summary>
+		/// 동기화 없음
+		/// </summary>
+		/// <param name="currentPlayerField"></param>
+		/// <param name="newValue"></param>
+		/// <param name="otherPlayerField"></param>
+		private void SetPlayerId(ref string? currentPlayerField, string? newValue, string? otherPlayerField)
+		{
+            if (currentPlayerField == newValue)
+            {
+                return;
+            }
+
+            if (currentPlayerField != null)
+            {
+                PlayerKicked?.Invoke(this, new ClientIdArgs(currentPlayerField));
+            }
+
+            currentPlayerField = newValue;
+
+            if (newValue == null)
+            {
+                if (otherPlayerField != null)
+                {
+                    _roomOwnerId = otherPlayerField;
+                    RoomOwnerChanged?.Invoke(this, new ClientIdArgs(otherPlayerField));
+                }
+                else
+                {
+					Console.WriteLine($"{RoomId} IS NOW INACTIVE");
+                    _roomOwnerId = null;
+					_state = RoomState.Inactive;
+                    GameRoomInactivated?.Invoke(this, EventArgs.Empty);
+                }
+            }
+        }
 	}
 }

@@ -137,6 +137,7 @@ namespace WebOmokServer
 
         private void OnClientDisconnected(Client client)
         {
+            Console.WriteLine($"[접속 해제] {client}");
             _clients.Remove(client.Id);
             _nicknames.Remove(client.Id);
             foreach (var gameRoom in _gameRooms)

@@ -4,15 +4,26 @@ namespace WebOmokServer
 {
     public partial class OmokServer
     {
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <param name="client"></param>
-        /// <param name="message"></param>
-        /// <returns></returns>
-        /// <exception cref="JsonException"></exception>
-        /// <exception cref="MessageSizeOverFlowException"></exception>
-        private async Task<bool> HandleMessageAsync(Client client, string message)
+        private bool IsThisClientAlreadyJoinedAnyRoom(string clientId)
+        {
+            foreach (var gameRoom in _gameRooms)
+            {
+                if (gameRoom.IsPlayerJoined(clientId))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+/// <summary>
+/// 
+/// </summary>
+/// <param name="client"></param>
+/// <param name="message"></param>
+/// <returns></returns>
+/// <exception cref="JsonException"></exception>
+/// <exception cref="MessageSizeOverFlowException"></exception>
+private async Task<bool> HandleMessageAsync(Client client, string message)
         {
             using JsonDocument jsonDocument = JsonDocument.Parse(message);
             JsonElement json = jsonDocument.RootElement;
@@ -30,6 +41,30 @@ namespace WebOmokServer
                         await ClientSendAllRoomItemsAsync(client);
                         return true;
                     }
+                case "requestJoinGameRoom":
+                    {
+                        if (IsThisClientAlreadyJoinedAnyRoom(client.Id))
+                        {
+                            return false;
+                        }
+                        var roomId = json.GetProperty("roomId").GetInt32();
+                        if (roomId < 0 || roomId >= MAX_ROOM_COUNT || !_gameRooms[roomId].IsJoinable())
+                        {
+                            await ClientFlashMessageAsync(client, "유효하지 않은 방입니다.", FlashMessageType.Warning);
+                            foreach (var peer in _clients.Values)
+                            {
+                                await ClientRemoveRoomItemAsync(peer, roomId);
+                            }
+                            return true;
+                        }
+
+                        if (_gameRooms[roomId].AddPlayer(client.Id))
+                        {
+                            await ClientEnterGameRoomAsync(client);
+                        }
+
+                        return true;
+                    }
                 default:
                     {
                         Console.WriteLine($"[알 수 없는 메시지 수신]: {messageNameString}");
@@ -41,20 +76,10 @@ namespace WebOmokServer
 
         private async Task<bool> OnClientCreateRoom(Client client, JsonElement json)
         {
-            var IsThisClientAlreadyJoinedAnyRoom = () =>
-            {
-                foreach (var gameRoom in _gameRooms)
-                {
-                    if (gameRoom.IsPlayerJoined(client.Id))
-                    {
-                        return true;
-                    }
-                }
-                return false;
-            };
+
             var IsClientEnteredEmptyRoomName = (string roomName) => roomName.Length == 0;
 
-            if (IsThisClientAlreadyJoinedAnyRoom())
+            if (IsThisClientAlreadyJoinedAnyRoom(client.Id))
             {
                 await ClientFlashMessageAsync(client, "에러가 발생하여 연결을 종료합니다.", FlashMessageType.Error);
                 return false;
@@ -71,7 +96,7 @@ namespace WebOmokServer
             {
                 if (gameRoom.State == GameRoom.RoomState.Inactive)
                 {
-                    gameRoom.RoomName = roomName;
+                    gameRoom.SetRoomName(roomName);
                     if (gameRoom.AddPlayer(client.Id))
                     {
                         foreach (var peer in _clients.Values)

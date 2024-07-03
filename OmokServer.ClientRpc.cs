@@ -102,6 +102,16 @@ namespace WebOmokServer
             }
         }
 
+        private async Task ClientEnterGameRoomAsync(Client client)
+        {
+            var messageObject = new
+            {
+                msg = "enterGameRoom",
+            };
+
+            await SendClientAsync(client, messageObject);
+        }
+
         private async Task ClientNotifyKickedFromGameRoomAsync(Client client)
         {
             var messageObject = new
