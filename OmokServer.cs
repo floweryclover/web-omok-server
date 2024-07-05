@@ -137,17 +137,23 @@ namespace WebOmokServer
 
             foreach (var gameRoom in _gameRooms)
             {
+                var changes = GameRoom.GameRoomChanges.Empty;
                 await _gameRoomSemaphoreSlim[gameRoom.RoomId].WaitAsync();
                 try
                 {
                     if (gameRoom.IsPlayerJoined(clientId))
                     {
-                        await HandleGameRoomChanges(gameRoom, gameRoom.RemovePlayer(clientId));
+                        changes = gameRoom.RemovePlayer(clientId);
                     }
                 }
                 finally
                 {
                     _gameRoomSemaphoreSlim[gameRoom.RoomId].Release();
+                }
+
+                if (changes.JoinedLeftPlayers.Count > 0)
+                {
+                    await HandleGameRoomChanges(gameRoom, changes);
                 }
             }
         }
@@ -155,6 +161,24 @@ namespace WebOmokServer
         private async Task HandleGameRoomChanges(GameRoom gameRoom, GameRoom.GameRoomChanges gameRoomChanges)
         {
             var peerIds = await GetAllPeerIds();
+            var updateRoomInfo = async () =>
+            {
+                if (gameRoom.BlackPlayer != null)
+                {
+                    await ClientUpdateGameRoomInfoAsync(gameRoom.BlackPlayer);
+                }
+                if (gameRoom.WhitePlayer != null)
+                {
+                    await ClientUpdateGameRoomInfoAsync(gameRoom.WhitePlayer);
+                }
+            };
+            var updateRoomItem = async () =>
+            {
+                foreach (var peerId in peerIds)
+                {
+                    await ClientSendRoomItemAsync(peerId, gameRoom.RoomId);
+                }
+            };
 
             foreach (var joinedLeftPlayer in gameRoomChanges.JoinedLeftPlayers)
             {
@@ -171,40 +195,8 @@ namespace WebOmokServer
                 }
             }
 
-            if (gameRoomChanges.NewRoomState != null)
-            {
-                foreach (var peerId in peerIds)
-                {
-                    await ClientSendRoomItemAsync(peerId, gameRoom.RoomId);
-                }
-            }
-
-            var updateRoomData = async () =>
-            {
-                foreach (var peerId in peerIds)
-                {
-                    await ClientSendRoomItemAsync(peerId, gameRoom.RoomId);
-                }
-
-                if (gameRoom.BlackPlayer != null)
-                {
-                    await ClientUpdateGameRoomInfoAsync(gameRoom.BlackPlayer);
-                }
-                if (gameRoom.WhitePlayer != null)
-                {
-                    await ClientUpdateGameRoomInfoAsync(gameRoom.WhitePlayer);
-                }
-            };
-
-            if (gameRoomChanges.NewRoomName != null)
-            {
-                await updateRoomData();
-            }
-
-            if (gameRoomChanges.NewOwnerId != null)
-            {
-                await updateRoomData();
-            }
+            await updateRoomInfo();
+            await updateRoomItem();
         }
 
         private async Task<List<string>> GetAllPeerIds()
