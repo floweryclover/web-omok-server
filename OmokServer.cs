@@ -22,28 +22,31 @@ namespace WebOmokServer
         enum FlashMessageType { Info, Warning, Error }
 
         private const int MAX_ROOM_COUNT = 16;
-		private const int BUFFER_SIZE = 256;
+		private const int BUFFER_SIZE = 512;
         private const string DEFAULT_USER_NICKNAME = "플레이어";
 
         private GameRoom[] _gameRooms = new GameRoom[MAX_ROOM_COUNT];
+        private SemaphoreSlim[] _gameRoomSemaphoreSlim = new SemaphoreSlim[MAX_ROOM_COUNT];
+
         private Dictionary<string, string> _nicknames = new Dictionary<string, string>();
 		private Dictionary<string, Client> _clients = new Dictionary<string, Client>();
+        private Dictionary<string, SemaphoreSlim> _clientLocks = new Dictionary<string, SemaphoreSlim>();
+        private SemaphoreSlim _dictionarySemaphoreSlim = new SemaphoreSlim(1, 1);
 
         public OmokServer()
         {
             for (int roomId = 0; roomId<MAX_ROOM_COUNT; roomId++)
             {
                 var newRoom = new GameRoom(roomId);
-                newRoom.PlayerKicked += OnPlayerKicked;
-                newRoom.GameRoomInactivated += OnGameRoomInactivated;
                 _gameRooms[roomId] = newRoom;
+                _gameRoomSemaphoreSlim[roomId] = new SemaphoreSlim(1, 1);
             }
         }
 
         public async Task HandleClientLoopAsync(Client client)
         {
             var closeWebSocket = (string message) => client.WebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, message, CancellationToken.None);
-            OnClientConnected(client);
+            await OnClientConnected(client);
             var buffer = new byte[BUFFER_SIZE];
             
             try
@@ -64,7 +67,7 @@ namespace WebOmokServer
                     }
 
 					string message = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                    if (!await HandleMessageAsync(client, message))
+                    if (!await HandleMessageAsync(client.Id, message))
                     {
                         await closeWebSocket("오류가 발생하였습니다.");
                         break;
@@ -87,67 +90,135 @@ namespace WebOmokServer
                     await client.WebSocket.CloseAsync(WebSocketCloseStatus.InternalServerError, "서버 로직 에러로 연결을 종료합니다.", CancellationToken.None);
                 }
             }
-            OnClientDisconnected(client);
+            await OnClientDisconnected(client);
 		}
 
-        private void OnGameRoomInactivated(object? sender, EventArgs args)
-        {
-            if (sender == null)
-            {
-                return;
-            }
-
-            foreach (var client in _clients.Values)
-            {
-                ClientRemoveRoomItemAsync(client, ((GameRoom)sender).RoomId).Wait();
-            }
-        }
-
-        private void OnPlayerKicked(object? sender, GameRoom.ClientIdArgs args)
-        {
-            if (sender == null)
-            {
-                return;
-            }
-
-            if (!_clients.ContainsKey(args.ClientId))
-                return;
-            ClientNotifyKickedFromGameRoomAsync(_clients[args.ClientId]).Wait();
-        }
-
-        private void OnRoomNameChanged(object? sender, EventArgs args)
-        {
-            if (sender == null)
-            {
-                return;
-            }
-
-            foreach (var client in _clients.Values)
-            {
-                ClientSendRoomItemAsync(client, ((GameRoom)sender).RoomId).Wait();
-            }
-        }
-
-        private void OnClientConnected(Client client)
+        private async Task OnClientConnected(Client client)
         {
             Console.WriteLine($"[접속] {client}");
-            _clients.Add(client.Id, client);
-            _nicknames.Add(client.Id, "플레이어");
+            await _dictionarySemaphoreSlim.WaitAsync();
+            try
+            {
+                _nicknames.Add(client.Id, "플레이어");
+                _clients.Add(client.Id, client);
+                _clientLocks.Add(client.Id, new SemaphoreSlim(1, 1));
+            }
+            finally
+            {
+                _dictionarySemaphoreSlim.Release();
+            }
         }
 
-        private void OnClientDisconnected(Client client)
+        private async Task OnClientDisconnected(Client client)
         {
+            var clientId = client.Id;
             Console.WriteLine($"[접속 해제] {client}");
-            _clients.Remove(client.Id);
-            _nicknames.Remove(client.Id);
+
+            await _dictionarySemaphoreSlim.WaitAsync();
+            try
+            {
+                await _clientLocks[clientId].WaitAsync();
+                try
+                {
+                    client.Dispose();
+                }
+                finally
+                {
+                    _clientLocks[clientId].Release();
+                }
+                _clientLocks.Remove(clientId);
+                _clients.Remove(clientId);
+                _nicknames.Remove(clientId);
+            }
+            finally
+            {
+                _dictionarySemaphoreSlim.Release();
+            }
+
             foreach (var gameRoom in _gameRooms)
             {
-                if (gameRoom.IsPlayerJoined(client.Id))
+                await _gameRoomSemaphoreSlim[gameRoom.RoomId].WaitAsync();
+                try
                 {
-                    gameRoom.RemovePlayer(client.Id);
+                    if (gameRoom.IsPlayerJoined(clientId))
+                    {
+                        await HandleGameRoomChanges(gameRoom, gameRoom.RemovePlayer(clientId));
+                    }
+                }
+                finally
+                {
+                    _gameRoomSemaphoreSlim[gameRoom.RoomId].Release();
                 }
             }
-            client.Dispose();
+        }
+
+        private async Task HandleGameRoomChanges(GameRoom gameRoom, GameRoom.GameRoomChanges gameRoomChanges)
+        {
+            var peerIds = await GetAllPeerIds();
+
+            foreach (var joinedLeftPlayer in gameRoomChanges.JoinedLeftPlayers)
+            {
+                string clientId = joinedLeftPlayer.Item1;
+                var result = joinedLeftPlayer.Item2;
+
+                if (result == GameRoom.GameRoomChanges.PlayerJoinLeaveResult.Joined)
+                {
+                    await ClientEnterGameRoomAsync(clientId);
+                }
+                else
+                {
+                    await ClientNotifyKickedFromGameRoomAsync(clientId);
+                }
+            }
+
+            if (gameRoomChanges.NewRoomState != null)
+            {
+                foreach (var peerId in peerIds)
+                {
+                    await ClientSendRoomItemAsync(peerId, gameRoom.RoomId);
+                }
+            }
+
+            var updateRoomData = async () =>
+            {
+                foreach (var peerId in peerIds)
+                {
+                    await ClientSendRoomItemAsync(peerId, gameRoom.RoomId);
+                }
+
+                if (gameRoom.BlackPlayer != null)
+                {
+                    await ClientUpdateGameRoomInfoAsync(gameRoom.BlackPlayer);
+                }
+                if (gameRoom.WhitePlayer != null)
+                {
+                    await ClientUpdateGameRoomInfoAsync(gameRoom.WhitePlayer);
+                }
+            };
+
+            if (gameRoomChanges.NewRoomName != null)
+            {
+                await updateRoomData();
+            }
+
+            if (gameRoomChanges.NewOwnerId != null)
+            {
+                await updateRoomData();
+            }
+        }
+
+        private async Task<List<string>> GetAllPeerIds()
+        {
+            await _dictionarySemaphoreSlim.WaitAsync();
+            try
+            {
+                var copiedPeerIds = new List<string>(_clients.Keys);
+                return copiedPeerIds;
+            }
+            finally
+            {
+                _dictionarySemaphoreSlim.Release();
+            }
         }
     }
 }

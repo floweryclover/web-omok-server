@@ -16,7 +16,7 @@ namespace WebOmokServer
         /// <returns></returns>
         /// <exception cref="MessageSizeOverFlowException"></exception>
         /// <exception cref="JsonException"></exception>
-        private async Task SendClientAsync(Client client, object jsonObject)
+        private async Task SendClientAsync(string clientId, object jsonObject)
         {
             string jsonString;
             try
@@ -36,10 +36,31 @@ namespace WebOmokServer
                 throw new MessageSizeOverFlowException(segment.Count);
             }
 
-            await client.WebSocket.SendAsync(segment, WebSocketMessageType.Text, true, CancellationToken.None);
+            await _dictionarySemaphoreSlim.WaitAsync();
+            try
+            {
+                if (!_clients.ContainsKey(clientId))
+                {
+                    return;
+                }
+
+                await _clientLocks[clientId].WaitAsync();
+                try
+                {
+                    await _clients[clientId].WebSocket.SendAsync(segment, WebSocketMessageType.Text, true, CancellationToken.None);
+                }
+                finally
+                {
+                    _clientLocks[clientId].Release();
+                }
+            }
+            finally
+            {
+                _dictionarySemaphoreSlim.Release();
+            }
         }
 
-        private async Task ClientFlashMessageAsync(Client client, string message, FlashMessageType messageType)
+        private async Task ClientFlashMessageAsync(string clientId, string message, FlashMessageType messageType)
         {
             int messageTypeNumber;
             if (messageType == FlashMessageType.Info)
@@ -54,28 +75,28 @@ namespace WebOmokServer
                 text = message,
                 flashType = messageTypeNumber
             };
-            await SendClientAsync(client, messageObject);
+            await SendClientAsync(clientId, messageObject);
         }
 
-        private async Task ClientSendAllRoomItemsAsync(Client client)
+        private async Task ClientSendAllRoomItemsAsync(string clientId)
         {
             foreach (var gameRoom in _gameRooms)
             {
-                await ClientSendRoomItemAsync(client, gameRoom.RoomId);
+                await ClientSendRoomItemAsync(clientId, gameRoom.RoomId);
             }
         }
 
-        private async Task ClientRemoveRoomItemAsync(Client client, int roomId)
+        private async Task ClientRemoveRoomItemAsync(string clientId, int roomId)
         {
             var messageObject = new
             {
                 msg = "removeRoomItem",
                 roomId = roomId
             };
-            await SendClientAsync(client, messageObject);
+            await SendClientAsync(clientId, messageObject);
         }
 
-        private async Task ClientSendRoomItemAsync(Client client, int roomId)
+        private async Task ClientSendRoomItemAsync(string clientId, int roomId)
         {
             if (roomId < 0 || roomId >= MAX_ROOM_COUNT)
             {
@@ -98,28 +119,93 @@ namespace WebOmokServer
                     roomOwner = _nicknames[gameRoom.RoomOwnerId]
                 };
 
-                await SendClientAsync(client, messageObject);
+                await SendClientAsync(clientId, messageObject);
             }
         }
 
-        private async Task ClientEnterGameRoomAsync(Client client)
+        private async Task ClientEnterGameRoomAsync(string clientId)
         {
             var messageObject = new
             {
                 msg = "enterGameRoom",
             };
 
-            await SendClientAsync(client, messageObject);
+            await SendClientAsync(clientId, messageObject);
         }
 
-        private async Task ClientNotifyKickedFromGameRoomAsync(Client client)
+        private async Task ClientUpdateGameRoomInfoAsync(string clientId)
+        {
+            GameRoom? gameRoom = null;
+            foreach (var room in _gameRooms)
+            {
+                if (room.IsPlayerJoined(clientId))
+                {
+                    gameRoom = room;
+                    break;
+                }
+            }
+
+            if (gameRoom == null)
+            {
+                return;
+            }
+
+            await _gameRoomSemaphoreSlim[gameRoom.RoomId].WaitAsync();
+            object? messageObject = null;
+            try
+            {
+                if (!gameRoom.IsPlayerJoined(clientId))
+                {
+                    return;
+                }
+
+                string? opponentClientId = clientId == gameRoom.BlackPlayer ? gameRoom.WhitePlayer : gameRoom.BlackPlayer;
+                string? opponentName = null;
+                if (opponentClientId != null)
+                {
+                    _nicknames.TryGetValue(opponentClientId, out opponentName);
+                }
+
+                int myColor = 2;
+                int opponentColor = 2;
+                if (gameRoom.State == GameRoom.RoomState.Playing)
+                {
+                    myColor = clientId == gameRoom.BlackPlayer ? 0 : 1;
+                    opponentColor = 1 - myColor;
+                }
+
+                messageObject = new
+                {
+                    msg = "updateGameRoomInfo",
+                    roomName = gameRoom.RoomName,
+                    myName = _nicknames[clientId],
+                    myColor,
+                    opponentName,
+                    opponentColor,
+                    isOwner = gameRoom.RoomOwnerId == clientId,
+                };
+            }
+            finally
+            {
+                _gameRoomSemaphoreSlim[gameRoom.RoomId].Release();
+            }
+
+            if (messageObject == null)
+            {
+                return;
+            }
+
+            await SendClientAsync(clientId, messageObject);
+        }
+
+        private async Task ClientNotifyKickedFromGameRoomAsync(string clientId)
         {
             var messageObject = new
             {
                 msg = "kickedFromGameRoom"
             };
 
-            await SendClientAsync(client, messageObject);
+            await SendClientAsync(clientId, messageObject);
         }
     }
 }
