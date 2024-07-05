@@ -179,6 +179,13 @@ namespace WebOmokServer
                     await ClientSendRoomItemAsync(peerId, gameRoom.RoomId);
                 }
             };
+            var changeRoomState = async () =>
+            {
+                foreach (var peerId in peerIds)
+                {
+                    await ClientChangeRoomStateAsync(peerId, gameRoom.RoomId);
+                }
+            };
 
             foreach (var joinedLeftPlayer in gameRoomChanges.JoinedLeftPlayers)
             {
@@ -197,6 +204,7 @@ namespace WebOmokServer
 
             await updateRoomInfo();
             await updateRoomItem();
+            await changeRoomState();
         }
 
         private async Task<List<string>> GetAllPeerIds()

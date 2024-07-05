@@ -207,5 +207,28 @@ namespace WebOmokServer
 
             await SendClientAsync(clientId, messageObject);
         }
+
+        private async Task ClientChangeRoomStateAsync(string clientId, int roomId)
+        {
+            var gameRoom = _gameRooms[roomId];
+            int roomState = 0;
+            if (gameRoom.State == GameRoom.RoomState.Waiting)
+            {
+                roomState = 1;
+            }
+            else if (gameRoom.State == GameRoom.RoomState.Playing)
+            {
+                roomState = 2;
+            }
+
+            var messageObject = new
+            {
+                msg = "changeRoomState",
+                roomId,
+                roomState,
+            };
+
+            await SendClientAsync(clientId, messageObject);
+        }
     }
 }

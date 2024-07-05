@@ -194,5 +194,19 @@
 
 			return changes;
         }
+
+		public GameRoomChanges StartGame()
+		{
+			if (State != RoomState.Waiting || BlackPlayer == null || WhitePlayer == null)
+			{
+				return GameRoomChanges.Empty;
+			}
+
+			_state = RoomState.Playing;
+
+			var changes = GameRoomChanges.Empty;
+			changes.NewRoomState = RoomState.Playing;
+			return changes;
+		}
 	}
 }

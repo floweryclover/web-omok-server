@@ -73,6 +73,39 @@ namespace WebOmokServer
 
                         return true;
                     }
+                case "startGame":
+                    {
+                        foreach (var gameRoom in _gameRooms)
+                        {
+                            if (!gameRoom.IsPlayerJoined(clientId))
+                            {
+                                continue;
+                            }
+                            if (gameRoom.RoomOwnerId != clientId)
+                            {
+                                return false;
+                            }
+
+                            var gameRoomChanges = GameRoom.GameRoomChanges.Empty;
+                            await _gameRoomSemaphoreSlim[gameRoom.RoomId].WaitAsync();
+                            try
+                            {
+                                if (!gameRoom.IsPlayerJoined(clientId) || gameRoom.RoomOwnerId != clientId)
+                                {
+                                    return false;
+                                }
+								gameRoomChanges = gameRoom.StartGame();
+							}
+                            finally
+                            {
+                                _gameRoomSemaphoreSlim[gameRoom.RoomId].Release();
+                            }
+                            await HandleGameRoomChanges(gameRoom, gameRoomChanges);
+                            return true;
+
+                        }
+                        return false;
+                    }
                 default:
                     {
                         Console.WriteLine($"[알 수 없는 메시지 수신]: {messageNameString}");
