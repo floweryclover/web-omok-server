@@ -137,7 +137,7 @@ namespace WebOmokServer
 
             foreach (var gameRoom in _gameRooms)
             {
-                var changes = GameRoom.GameRoomChanges.Empty;
+                var changes = new GameRoom.GameRoomChanges();
                 await _gameRoomSemaphoreSlim[gameRoom.RoomId].WaitAsync();
                 try
                 {
@@ -161,50 +161,178 @@ namespace WebOmokServer
         private async Task HandleGameRoomChanges(GameRoom gameRoom, GameRoom.GameRoomChanges gameRoomChanges)
         {
             var peerIds = await GetAllPeerIds();
-            var updateRoomInfo = async () =>
-            {
-                if (gameRoom.BlackPlayer != null)
-                {
-                    await ClientUpdateGameRoomInfoAsync(gameRoom.BlackPlayer);
-                }
-                if (gameRoom.WhitePlayer != null)
-                {
-                    await ClientUpdateGameRoomInfoAsync(gameRoom.WhitePlayer);
-                }
-            };
-            var updateRoomItem = async () =>
-            {
-                foreach (var peerId in peerIds)
-                {
-                    await ClientSendRoomItemAsync(peerId, gameRoom.RoomId);
-                }
-            };
-            var changeRoomState = async () =>
-            {
-                foreach (var peerId in peerIds)
-                {
-                    await ClientChangeRoomStateAsync(peerId, gameRoom.RoomId);
-                }
-            };
+			string? blackPlayerId = null;
+			string? whitePlayerId = null;
+            await _gameRoomSemaphoreSlim[gameRoom.RoomId].WaitAsync();
+			try
+			{
+				blackPlayerId = gameRoom.BlackPlayer;
+				whitePlayerId = gameRoom.WhitePlayer;
+			}
+			finally
+			{
+				_gameRoomSemaphoreSlim[gameRoom.RoomId].Release();
+			}
 
-            foreach (var joinedLeftPlayer in gameRoomChanges.JoinedLeftPlayers)
+			foreach (var joinedLeftPlayer in gameRoomChanges.JoinedLeftPlayers)
             {
                 string clientId = joinedLeftPlayer.Item1;
                 var result = joinedLeftPlayer.Item2;
 
                 if (result == GameRoom.GameRoomChanges.PlayerJoinLeaveResult.Joined)
                 {
-                    await ClientEnterGameRoomAsync(clientId);
+                    string currentRoomName = "";
+                    string? opponentClientId = null;
+                    bool isOwner = false;
+                    var roomState = GameRoom.RoomState.Inactive;
+					await _gameRoomSemaphoreSlim[gameRoom.RoomId].WaitAsync();
+                    try
+                    {
+                        currentRoomName = gameRoom.RoomName;
+						opponentClientId = clientId == gameRoom.BlackPlayer ? gameRoom.WhitePlayer : gameRoom.BlackPlayer;
+                        isOwner = gameRoom.RoomOwnerId == clientId;
+                        roomState = gameRoom.State;
+					}
+                    finally
+                    {
+                        _gameRoomSemaphoreSlim[gameRoom.RoomId].Release();
+                    }
+                    
+					string myNickname = "";
+					string opponentNickname = "";
+					await _dictionarySemaphoreSlim.WaitAsync();
+                    try
+                    {
+                        myNickname = _nicknames[clientId];
+                        if (opponentClientId != null && _nicknames.ContainsKey(opponentClientId))
+                        {
+                            opponentNickname = _nicknames[opponentClientId];
+                        }
+                    }
+                    finally
+                    {
+                        _dictionarySemaphoreSlim.Release();
+                    }
+
+					await ClientUpdateCurrentRoomNameAsync(clientId, currentRoomName);
+					await ClientEnterGameRoomAsync(clientId, gameRoom.RoomId);
+					await ClientUpdateMyNameAsync(clientId, myNickname);
+                    await ClientUpdateOpponentNameAsync(clientId, opponentNickname);
+                    await ClientUpdateOwnershipAsync(clientId, isOwner);
+                    await ClientUpdateRoomStateAsync(clientId, gameRoom.RoomId, roomState);
+                    await ClientUpdateStoneColorAsync(clientId, GameRoom.StoneColor.None);
+
+                    if (opponentClientId != null)
+                    {
+						await ClientUpdateCurrentRoomNameAsync(opponentClientId, currentRoomName);
+						await ClientEnterGameRoomAsync(opponentClientId, gameRoom.RoomId);
+						await ClientUpdateMyNameAsync(opponentClientId, opponentNickname);
+						await ClientUpdateOpponentNameAsync(opponentClientId, myNickname);
+						await ClientUpdateOwnershipAsync(opponentClientId, !isOwner);
+						await ClientUpdateRoomStateAsync(opponentClientId, gameRoom.RoomId, roomState);
+						await ClientUpdateStoneColorAsync(opponentClientId, GameRoom.StoneColor.None);
+					}
                 }
                 else
                 {
                     await ClientNotifyKickedFromGameRoomAsync(clientId);
+                    var ClearOpponentNameOf = async (string? clientId) =>
+                    {
+                        if (clientId == null)
+                        {
+                            return;
+                        }
+                        await ClientUpdateOpponentNameAsync(clientId, "");
+                    };
+                    await ClearOpponentNameOf(gameRoom.BlackPlayer);
+                    await ClearOpponentNameOf(gameRoom.WhitePlayer);
                 }
             }
 
-            await updateRoomInfo();
-            await updateRoomItem();
-            await changeRoomState();
+            if (gameRoomChanges.NewRoomName != null || gameRoomChanges.NewOwnerId != null || gameRoomChanges.NewRoomState != null)
+            {
+                foreach (var peerId in peerIds)
+                {
+                    await ClientSendRoomItemAsync(peerId, gameRoom.RoomId);
+                }
+            }
+
+            if (gameRoomChanges.NewRoomName != null)
+            {
+				if (blackPlayerId != null)
+				{
+					await ClientUpdateCurrentRoomNameAsync(blackPlayerId, gameRoomChanges.NewRoomName);
+				}
+				if (whitePlayerId != null)
+				{
+					await ClientUpdateCurrentRoomNameAsync(whitePlayerId, gameRoomChanges.NewRoomName);
+				}
+			}
+
+            if (gameRoomChanges.NewOwnerId != null)
+            {
+				if (blackPlayerId != null)
+				{
+					await ClientUpdateOwnershipAsync(blackPlayerId, gameRoomChanges.NewOwnerId == blackPlayerId);
+				}
+				if (whitePlayerId != null)
+				{
+					await ClientUpdateOwnershipAsync(whitePlayerId, gameRoomChanges.NewOwnerId == whitePlayerId);
+				}
+			}
+
+            if (gameRoomChanges.NewRoomState != null)
+            {
+                if (gameRoomChanges.NewRoomState == GameRoom.RoomState.Playing)
+                {
+                    var SendStoneColorInfo = async (string? clientId) =>
+                    {
+                        if (clientId == null)
+                        {
+                            return;
+                        }
+                        await ClientUpdateStoneColorAsync(clientId, gameRoom.BlackPlayer == clientId ? GameRoom.StoneColor.Black : GameRoom.StoneColor.White);
+                        await ClientUpdateRoomStateAsync(clientId, gameRoom.RoomId, GameRoom.RoomState.Playing);
+                    };
+                    await SendStoneColorInfo(gameRoom.BlackPlayer);
+                    await SendStoneColorInfo(gameRoom.WhitePlayer);
+                }
+                else if (gameRoomChanges.NewRoomState == GameRoom.RoomState.Inactive)
+                {
+                    foreach (var peerId in peerIds)
+                    {
+                        await ClientUpdateRoomStateAsync(peerId, gameRoom.RoomId, GameRoom.RoomState.Inactive);
+                    }
+                }
+            }
+
+            if (gameRoomChanges.NewPlacedStone != null)
+            {
+                var SendPlacedStoneInfo = async (string? clientId) =>
+                {
+                    if (clientId == null)
+                    {
+                        return;
+                    }
+                    await ClientPlaceStoneAsync(clientId, gameRoomChanges.NewPlacedStone.Item1, gameRoomChanges.NewPlacedStone.Item2, gameRoomChanges.NewPlacedStone.Item3);
+                };
+                await SendPlacedStoneInfo(gameRoom.BlackPlayer);
+                await SendPlacedStoneInfo(gameRoom.WhitePlayer);
+            }
+
+            if (gameRoomChanges.Message != null)
+            {
+                var SendGameMessage = async (string? clientId) =>
+                {
+                    if (clientId == null)
+                    {
+                        return;
+                    }
+                    await ClientGameMessageAsync(clientId, gameRoomChanges.Message);
+                };
+                await SendGameMessage(gameRoom.BlackPlayer);
+                await SendGameMessage(gameRoom.WhitePlayer);
+            }
         }
 
         private async Task<List<string>> GetAllPeerIds()

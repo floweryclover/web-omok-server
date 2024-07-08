@@ -3,6 +3,7 @@ using System.Net.WebSockets;
 using System.Text.Json;
 using System.Text;
 using System.Net;
+using Microsoft.VisualBasic;
 
 namespace WebOmokServer
 {
@@ -86,16 +87,6 @@ namespace WebOmokServer
             }
         }
 
-        private async Task ClientRemoveRoomItemAsync(string clientId, int roomId)
-        {
-            var messageObject = new
-            {
-                msg = "removeRoomItem",
-                roomId = roomId
-            };
-            await SendClientAsync(clientId, messageObject);
-        }
-
         private async Task ClientSendRoomItemAsync(string clientId, int roomId)
         {
             if (roomId < 0 || roomId >= MAX_ROOM_COUNT)
@@ -123,77 +114,13 @@ namespace WebOmokServer
             }
         }
 
-        private async Task ClientEnterGameRoomAsync(string clientId)
+        private async Task ClientEnterGameRoomAsync(string clientId, int roomId)
         {
             var messageObject = new
             {
                 msg = "enterGameRoom",
+                roomId
             };
-
-            await SendClientAsync(clientId, messageObject);
-        }
-
-        private async Task ClientUpdateGameRoomInfoAsync(string clientId)
-        {
-            GameRoom? gameRoom = null;
-            foreach (var room in _gameRooms)
-            {
-                if (room.IsPlayerJoined(clientId))
-                {
-                    gameRoom = room;
-                    break;
-                }
-            }
-
-            if (gameRoom == null)
-            {
-                return;
-            }
-
-            await _gameRoomSemaphoreSlim[gameRoom.RoomId].WaitAsync();
-            object? messageObject = null;
-            try
-            {
-                if (!gameRoom.IsPlayerJoined(clientId))
-                {
-                    return;
-                }
-
-                string? opponentClientId = clientId == gameRoom.BlackPlayer ? gameRoom.WhitePlayer : gameRoom.BlackPlayer;
-                string? opponentName = null;
-                if (opponentClientId != null)
-                {
-                    _nicknames.TryGetValue(opponentClientId, out opponentName);
-                }
-
-                int myColor = 2;
-                int opponentColor = 2;
-                if (gameRoom.State == GameRoom.RoomState.Playing)
-                {
-                    myColor = clientId == gameRoom.BlackPlayer ? 0 : 1;
-                    opponentColor = 1 - myColor;
-                }
-
-                messageObject = new
-                {
-                    msg = "updateGameRoomInfo",
-                    roomName = gameRoom.RoomName,
-                    myName = _nicknames[clientId],
-                    myColor,
-                    opponentName,
-                    opponentColor,
-                    isOwner = gameRoom.RoomOwnerId == clientId,
-                };
-            }
-            finally
-            {
-                _gameRoomSemaphoreSlim[gameRoom.RoomId].Release();
-            }
-
-            if (messageObject == null)
-            {
-                return;
-            }
 
             await SendClientAsync(clientId, messageObject);
         }
@@ -208,24 +135,116 @@ namespace WebOmokServer
             await SendClientAsync(clientId, messageObject);
         }
 
-        private async Task ClientChangeRoomStateAsync(string clientId, int roomId)
+        private async Task ClientUpdateRoomStateAsync(string clientId, int roomId, GameRoom.RoomState roomState)
         {
-            var gameRoom = _gameRooms[roomId];
-            int roomState = 0;
-            if (gameRoom.State == GameRoom.RoomState.Waiting)
+            int roomStateNumber = 0;
+            if (roomState == GameRoom.RoomState.Waiting)
             {
-                roomState = 1;
+				roomStateNumber = 1;
             }
-            else if (gameRoom.State == GameRoom.RoomState.Playing)
+            else if (roomState == GameRoom.RoomState.Playing)
             {
-                roomState = 2;
+				roomStateNumber = 2;
             }
 
             var messageObject = new
             {
-                msg = "changeRoomState",
+                msg = "updateRoomState",
                 roomId,
-                roomState,
+				roomStateNumber,
+            };
+
+            await SendClientAsync(clientId, messageObject);
+        }
+
+        private async Task ClientUpdateOwnershipAsync(string clientId, bool isOwner)
+        {
+            var messageObject = new
+            {
+                msg = "updateOwnership",
+                isOwner,
+            };
+
+            await SendClientAsync(clientId, messageObject);
+        }
+
+        private async Task ClientUpdateStoneColorAsync(string clientId, GameRoom.StoneColor myColor)
+        {
+            int myColorNumber = myColor switch
+			{
+				GameRoom.StoneColor.Black => 0,
+				GameRoom.StoneColor.White => 1,
+				_ => 2,
+			};
+
+            var messageObject = new
+            {
+                msg = "updateStoneColor",
+                myColorNumber,
+            };
+
+            await SendClientAsync(clientId, messageObject);
+        }
+
+        private async Task ClientUpdateCurrentRoomNameAsync(string clientId, string roomName)
+        {
+            var messageObject = new
+            {
+                msg = "updateCurrentRoomName",
+                roomName
+            };
+
+            await SendClientAsync(clientId, messageObject);
+        }
+
+        private async Task ClientUpdateMyNameAsync(string clientId, string myName)
+        {
+            var messageObject = new
+            {
+                msg = "updateMyName",
+                myName
+            };
+
+            await SendClientAsync(clientId, messageObject);
+        }
+
+        private async Task ClientUpdateOpponentNameAsync(string clientId, string opponentName)
+        {
+            var messageObject = new
+            {
+                msg = "updateOpponentName",
+                opponentName,
+            };
+
+            await SendClientAsync(clientId, messageObject);
+        }
+
+        private async Task ClientPlaceStoneAsync(string clientId, GameRoom.StoneColor stoneColor, int row, int column)
+        {
+            var stoneColorNumber = stoneColor switch
+            {
+                GameRoom.StoneColor.Black => 0,
+                GameRoom.StoneColor.White => 1,
+                _ => 2,
+            };
+
+            var messageObject = new
+            {
+                msg = "placeStone",
+                stoneColorNumber,
+                row,
+                column
+            };
+
+            await SendClientAsync(clientId, messageObject);
+        }
+
+        private async Task ClientGameMessageAsync(string clientId, string message)
+        {
+            var messageObject = new
+            {
+                msg = "gameMessage",
+                message,
             };
 
             await SendClientAsync(clientId, messageObject);

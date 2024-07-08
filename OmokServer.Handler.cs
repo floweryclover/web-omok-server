@@ -36,6 +36,38 @@ namespace WebOmokServer
                     {
                         return await OnClientCreateRoom(clientId, json);
                     }
+                case "requestLeaveGameRoom":
+                    {
+                        GameRoom? joinedGameRoom = null;
+                        foreach (var gameRoom in _gameRooms)
+                        {
+                            if (gameRoom.IsPlayerJoined(clientId))
+                            {
+								joinedGameRoom = gameRoom;
+                                break;
+                            }
+                        }
+                        if (joinedGameRoom == null)
+                        {
+                            return true;
+                        }
+						var changes = new GameRoom.GameRoomChanges();
+						await _gameRoomSemaphoreSlim[joinedGameRoom.RoomId].WaitAsync();
+						try
+						{
+							if (!joinedGameRoom.IsPlayerJoined(clientId))
+							{
+								return true;
+							}
+							changes = joinedGameRoom.RemovePlayer(clientId);
+						}
+						finally
+						{
+							_gameRoomSemaphoreSlim[joinedGameRoom.RoomId].Release();
+						}
+                        await HandleGameRoomChanges(joinedGameRoom, changes);
+						return true;
+                    }
                 case "requestAllRoomDatas":
                     {
                         await ClientSendAllRoomItemsAsync(clientId);
@@ -54,13 +86,13 @@ namespace WebOmokServer
                             var peerIds = await GetAllPeerIds();
                             foreach (var peerId in peerIds)
                             {
-                                await ClientRemoveRoomItemAsync(peerId, roomId);
+                                await ClientUpdateRoomStateAsync(clientId, roomId, GameRoom.RoomState.Inactive);
                             }
                             return true;
                         }
 
                         await _gameRoomSemaphoreSlim[roomId].WaitAsync();
-                        var gameRoomChanges = GameRoom.GameRoomChanges.Empty;
+                        var gameRoomChanges = new GameRoom.GameRoomChanges();
                         try
                         {
                             gameRoomChanges = _gameRooms[roomId].AddPlayer(clientId);
@@ -86,7 +118,7 @@ namespace WebOmokServer
                                 return false;
                             }
 
-                            var gameRoomChanges = GameRoom.GameRoomChanges.Empty;
+                            var gameRoomChanges = new GameRoom.GameRoomChanges();
                             await _gameRoomSemaphoreSlim[gameRoom.RoomId].WaitAsync();
                             try
                             {
@@ -105,6 +137,41 @@ namespace WebOmokServer
 
                         }
                         return false;
+                    }
+                case "placeStone":
+                    {
+                        var row = json.GetProperty("row").GetInt32();
+                        var column = json.GetProperty("column").GetInt32();
+                        var changes = new GameRoom.GameRoomChanges();
+                        GameRoom? gameRoomToHandle = null;
+                        foreach (var gameRoom in _gameRooms)
+                        {
+                            if (gameRoom.IsPlayerJoined(clientId))
+                            {
+                                await _gameRoomSemaphoreSlim[gameRoom.RoomId].WaitAsync();
+                                try
+                                {
+                                    if (!gameRoom.IsPlayerJoined(clientId))
+                                    {
+                                        return true;
+                                    }
+                                    changes = gameRoom.PlaceStone(clientId, row, column);
+                                }
+                                finally
+                                {
+                                    _gameRoomSemaphoreSlim[gameRoom.RoomId].Release();
+                                }
+								gameRoomToHandle = gameRoom;
+								break;
+							}
+                        }
+
+                        if (gameRoomToHandle != null)
+                        {
+                            await HandleGameRoomChanges(gameRoomToHandle, changes);
+                        }
+
+                        return true;
                     }
                 default:
                     {
@@ -134,7 +201,7 @@ namespace WebOmokServer
 
             foreach (var gameRoom in _gameRooms)
             {
-                var gameRoomChanges = GameRoom.GameRoomChanges.Empty;
+                var gameRoomChanges = new GameRoom.GameRoomChanges();
                 await _gameRoomSemaphoreSlim[gameRoom.RoomId].WaitAsync();
                 try
                 {
