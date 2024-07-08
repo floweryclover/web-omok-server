@@ -173,6 +173,36 @@ namespace WebOmokServer
 
                         return true;
                     }
+                case "changeNickname":
+                    {
+                        var nickname = json.GetProperty("nickname").GetString();
+                        if (nickname == null)
+                        {
+                            return false;
+                        }
+                        if (nickname.Length == 0 || nickname.Length > 32)
+                        {
+                            await ClientFlashMessageAsync(clientId, "닉네임은 0바이트 이상 32바이트 이하의 크기여야 합니다.", FlashMessageType.Warning);
+                            return true;
+                        }
+
+                        await _dictionarySemaphoreSlim.WaitAsync();
+                        try
+                        {
+                            if (!_nicknames.ContainsKey(clientId))
+                            {
+                                return false;
+                            }
+
+                            _nicknames[clientId] = nickname;
+                        }
+                        finally
+                        {
+                            _dictionarySemaphoreSlim.Release();
+                        }
+
+                        return true;
+                    }
                 default:
                     {
                         Console.WriteLine($"[알 수 없는 메시지 수신]: {messageNameString}");
